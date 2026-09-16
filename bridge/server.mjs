@@ -1303,7 +1303,9 @@ wss.on('connection', (socket) => {
   socket.send(
     JSON.stringify({
       type: 'ready',
-      servers: BRAIN === 'grokbot' ? [`grok bot · ${GROKBOT_BOT || 'open chat'}`] : Object.keys(MCP_SERVERS),
+      // In Grok Bot mode the rail lists the bots instead, fed by `bots`
+      // frames from the reader below, so nothing is claimed here.
+      servers: BRAIN === 'grokbot' ? [] : Object.keys(MCP_SERVERS),
     }),
   )
 
@@ -1712,6 +1714,17 @@ wss.on('connection', (socket) => {
     }
   }
 
+  /** Send the face the sidebar as it stands, with the active bot marked. */
+  const pushBots = () => {
+    if (!grok) return
+    const { bots, bot: open } = grok.state()
+    const active = normaliseName(grokBotName.current || open)
+    send({
+      type: 'bots',
+      bots: bots.map((b) => ({ ...b, active: normaliseName(b.name) === active })),
+    })
+  }
+
   const grokOffs = grok
     ? [
         grok.on('message', (m) => {
@@ -1734,6 +1747,12 @@ wss.on('connection', (socket) => {
         grok.on('working', (on, status) => {
           console.log(`[grok] ${on ? 'working' : 'idle'}${status?.length ? ` (${status.join(' / ')})` : ''}`)
         }),
+        // The sidebar is the face's left rail: every bot, the one being spoken
+        // to marked active, and a "working" light on whichever bot Chief of
+        // Staff has handed the job to. Grok Bot marks that bot ", Working" in
+        // its sidebar, which is the only outward sign of a delegation.
+        grok.on('bots', () => pushBots()),
+        grok.on('bot', () => pushBots()),
         grok.on('disconnected', () => {
           const turn = grokTurn
           if (turn && !turn.closed) {
@@ -1743,6 +1762,16 @@ wss.on('connection', (socket) => {
         }),
       ]
     : []
+  if (grok) {
+    // Connect now rather than on the first question, so the rail fills as
+    // soon as the face is up. A missing window is not an error yet: the first
+    // question reports it, spoken.
+    grok
+      .available()
+      .then((ok) => (ok ? grok.connect() : null))
+      .then(() => pushBots())
+      .catch((err) => console.log(`[grok] not reachable yet: ${err.message}`))
+  }
 
   async function runGrokTurn(text, id) {
     grokTurn?.close()
@@ -1771,6 +1800,7 @@ wss.on('connection', (socket) => {
           await grok.openBot(hit)
           grokBotName.current = hit
           console.log(`[grok] switched to ${hit}`)
+          pushBots()
           return finishWith(`Switched to ${hit}, sir.`)
         }
       }
@@ -1785,6 +1815,7 @@ wss.on('connection', (socket) => {
           return finishWith('Open a bot in Grok Bot first, sir, so I know who to talk to.')
         }
         console.log(`[grok] talking to the open chat: ${grokBotName.current}`)
+        pushBots()
       }
       const bot = grokBotName.current
       if (normaliseName(await grok.currentBot()) !== normaliseName(bot)) {

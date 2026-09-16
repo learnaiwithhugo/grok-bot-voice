@@ -152,6 +152,7 @@ export function Hud() {
   const turns = useStore((s) => s.turns)
   const activeTool = useStore((s) => s.activeTool)
   const connected = useStore((s) => s.connected)
+  const bots = useStore((s) => s.bots)
   const error = useStore((s) => s.error)
   const level = useStore((s) => s.level)
   const voice = useStore((s) => s.voice)
@@ -207,8 +208,26 @@ export function Hud() {
         </div>
       </header>
 
-      {/* Left rail: which integrations are live */}
-      {ui.chrome.systems && (
+      {/* Left rail: the Grok Bot team when that is the brain — the bot being
+          spoken to marked, a light on whichever bot the job was handed to —
+          otherwise which integrations are live */}
+      {ui.chrome.systems && bots.length > 0 && (
+        <aside className="rail rail-left">
+          <div className="rail-title">BOTS</div>
+          {bots.map((b) => (
+            <div
+              key={b.name}
+              className={`rail-item bot${b.active ? ' active' : ''}${b.status ? ` ${b.status}` : ''}`}
+            >
+              <span className="tick" />
+              {b.name}
+              {b.status === 'working' && <span className="rail-badge">working</span>}
+              {b.status === 'unread' && !b.active && <span className="rail-badge">replied</span>}
+            </div>
+          ))}
+        </aside>
+      )}
+      {ui.chrome.systems && bots.length === 0 && (
         <aside className="rail rail-left">
           <div className="rail-title">SYSTEMS</div>
           {connected.length === 0 && <div className="rail-item dim">none linked</div>}

@@ -164,6 +164,25 @@ body::after {
   box-shadow: 0 0 8px var(--accent);
 }
 
+/* The Grok Bot team. Bots not in play sit dim; the one being spoken to is
+   full brightness; a bot the job was handed to pulses with a "working" tag
+   until it answers, then shows "replied" until the chat is opened. */
+.rail-item.bot { opacity: 0.45; transition: opacity 240ms ease; }
+.rail-item.bot.active { opacity: 1; }
+.rail-item.bot.working,
+.rail-item.bot.unread { opacity: 0.9; }
+.rail-item.bot.working .tick {
+  animation: pulse 1.1s ease-in-out infinite;
+  box-shadow: 0 0 12px var(--accent);
+}
+.rail-badge {
+  font-size: 8px;
+  letter-spacing: 0.24em;
+  opacity: 0.6;
+  padding-left: 4px;
+}
+.rail-item.bot.working .rail-badge { animation: pulse 1.1s ease-in-out infinite; }
+
 .meter {
   width: 3px;
   height: 96px;

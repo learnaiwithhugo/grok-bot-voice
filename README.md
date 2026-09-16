@@ -71,6 +71,8 @@ already open the normal way), then starts the bridge and the interface. Open
 
 Open the bot you want to talk to in Grok Bot first. JARVIS talks to whichever
 chat is open, or set `GROKBOT_BOT=Chief of Staff` in `.env.local` to pin one.
+`npm run setup` offers to do that for you: with Grok Bot open it lists your
+bots and asks which one is the main one (Enter keeps "whichever chat is open").
 
 ## Using it
 
@@ -86,6 +88,11 @@ chat is open, or set `GROKBOT_BOT=Chief of Staff` in `.env.local` to pin one.
   including answers relayed from other bots, is read out on its own when it
   lands. If nothing has come back after 15 s JARVIS says "still on it"; at 60 s
   he says he'll tell you when it lands.
+- **Your bots on the left.** The BOTS rail lists every bot in your Grok Bot
+  sidebar. The one JARVIS is talking to is bright; when it hands a job to
+  another bot, that bot pulses with a "working" tag until it answers, then
+  shows "replied" until you open its chat. It's read straight off Grok Bot's
+  own sidebar, so it's only ever as current as the app.
 - **Clap** to wake him instead of clicking, if the tab is open.
 
 ## Settings
@@ -102,7 +109,7 @@ All in `.env.local`. Only the keys are normally needed.
 | `GROQ_STT_LANGUAGE` | `en` | |
 | `GROQ_MIN_LOGPROB` | `-0.7` | Transcripts less confident than this are treated as noise. |
 | `ELEVENLABS_API_KEY` | | Optional fallback for both voice and ears. |
-| `GROKBOT_BOT` | open chat | Pin a bot by name. |
+| `GROKBOT_BOT` | open chat | Pin a bot by name (`npm run setup` can set it). |
 | `GROKBOT_PORT` | `9333` | Grok Bot's control port (localhost only). |
 | `JARVIS_BRAIN` | `grokbot` | `claude` runs the original Claude brain. |
 | `GROKBOT_QUIET_MS` | `2000` | Close the turn this long after the last bubble. |

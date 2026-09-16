@@ -3,9 +3,11 @@ import * as direct from './anthropic'
 import * as bridge from './bridge'
 import type { AskHandlers, Msg } from './anthropic'
 import type { Blade, Panel } from '../store'
+import type { BotRow } from './bridge'
 
 export type { AskHandlers, Msg }
 export type { ConnectionState } from './bridge'
+export type { BotRow } from './bridge'
 
 /**
  * Picks the brain. Both backends answer a question and stream text and tool
@@ -42,6 +44,11 @@ export async function warm(): Promise<void> {
  *  with live status once the agent boots — so the HUD subscribes. */
 export function watchServers(fn: (servers: string[]) => void): void {
   if (usingBridge) bridge.watchServers(fn)
+}
+
+/** The Grok Bot sidebar for the rail: every bot, who is active, who is working. */
+export function watchBots(fn: (bots: BotRow[]) => void): void {
+  if (usingBridge) bridge.watchBots(fn)
 }
 
 /** HUD panels are pushed mid-turn by the `display` tool, not returned by ask(). */

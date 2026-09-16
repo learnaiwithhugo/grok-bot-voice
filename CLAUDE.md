@@ -20,7 +20,11 @@ Claude-brain mode.
   `[role="textbox"][aria-label="Prompt"]`, `[aria-label="<Bot> message"]`,
   `[role="status"]`), never generated class names. Polls from the bridge every
   300 ms; never install a timer in the page (throttled to once per 30–45 s when
-  the window is hidden).
+  the window is hidden). The same poll reads the sidebar (`SIDEBAR`: each
+  bot's name plus its ", Working" / ", Unread activity" label, which can stack)
+  and emits `bots`; the bridge forwards it to the face as a `bots` frame with
+  the active bot marked, which is what the BOTS rail draws. A bot marked
+  "working" while another is being spoken to is a delegation in progress.
 - `bridge/speakable.mjs` — markdown → speech text.
 - `scripts/start.mjs` — opens Grok Bot with `--remote-debugging-port`, then the
   bridge and the Vite face.

@@ -19,6 +19,8 @@
  *   on('message')    every bubble that appears or changes in the open chat,
  *                    flagged `isNew` when it was not there before
  *   on('working')    the "<Bot> is working" indicator turning on and off
+ *   on('bots')       the sidebar changing: which bots exist and which are
+ *                    marked working or unread, so a delegation can be shown
  *
  * The window is read by polling from this side (see SNAPSHOT), never by a
  * timer inside the page.
@@ -48,6 +50,24 @@ const RENDERER = /renderer\/index\.html/
  * last few transcript rows keyed by their timestamp, label and ordinal, which
  * is stable across the virtualised list recycling its elements.
  */
+/**
+ * The sidebar, as `[{ name, status }]`. Each bot is a button labelled with its
+ * name and, while it has one, a status: ", Working" when the bot is busy —
+ * which is how a delegation shows from outside — ", Unread activity" once it
+ * has answered, ", Replied", ", Typing".
+ */
+const SIDEBAR = `[...document.querySelectorAll('[aria-label="Pinned Bots"] button[aria-label], [aria-label="Bot list"] button[aria-label]')]
+  .map((e) => {
+    const label = (e.getAttribute('aria-label') || '').trim()
+    // Several can stack: "Chief of Staff, Unread activity, Working".
+    const m = /(?:,\\s*(?:Unread activity|Working|Replied|Typing))+$/i.exec(label)
+    const tags = m ? m[0].toLowerCase() : ''
+    const status = /working/.test(tags) ? 'working' : /typing/.test(tags) ? 'typing' : /unread/.test(tags) ? 'unread' : /replied/.test(tags) ? 'replied' : ''
+    return { name: m ? label.slice(0, m.index).trim() : label, status }
+  })
+  .filter((b) => b.name)
+  .filter((b, i, a) => a.findIndex((o) => o.name === b.name) === i)`
+
 const SNAPSHOT = `(() => {
   const heading = document.querySelector('[role="heading"]')
   const status = [...document.querySelectorAll('[role="status"]')]
@@ -68,6 +88,7 @@ const SNAPSHOT = `(() => {
     bot: heading ? heading.textContent.trim() : '',
     working: status.some((t) => /is working|working on|thinking/i.test(t)),
     status,
+    bots: ${SIDEBAR},
     rows: rows.slice(-15),
   }
 })()`
@@ -109,6 +130,8 @@ export function createGrokBot({ port, log = () => {} }) {
   const known = new Map()
   let bot = ''
   let working = false
+  /** @type {Array<{ name: string, status: string }>} the sidebar, last seen */
+  let sidebar = []
 
   const base = `http://127.0.0.1:${port}`
 
@@ -161,6 +184,11 @@ export function createGrokBot({ port, log = () => {} }) {
 
   /** Diff one snapshot against the last and emit what changed. */
   function absorb(snap) {
+    // The sidebar first, so a 'bot' listener that reads state() sees it.
+    if (Array.isArray(snap.bots) && JSON.stringify(snap.bots) !== JSON.stringify(sidebar)) {
+      sidebar = snap.bots
+      events.emit('bots', sidebar)
+    }
     if (snap.bot !== bot) {
       bot = snap.bot
       events.emit('bot', bot)
@@ -255,12 +283,8 @@ export function createGrokBot({ port, log = () => {} }) {
 
   async function bots() {
     await connect()
-    // Each bot in the sidebar is a button labelled with its name, with a
-    // status appended while it has one: ", Unread activity", ", Working".
-    return evaluate(`[...document.querySelectorAll('[aria-label="Pinned Bots"] button[aria-label], [aria-label="Bot list"] button[aria-label]')]
-      .map((e) => (e.getAttribute('aria-label') || '').replace(/,\\s*(?:Unread activity|Working|Replied|Typing)$/i, '').trim())
-      .filter(Boolean)
-      .filter((v, i, a) => a.indexOf(v) === i)`)
+    sidebar = await evaluate(SIDEBAR)
+    return sidebar.map((b) => b.name)
   }
 
   async function currentBot() {
@@ -281,7 +305,7 @@ export function createGrokBot({ port, log = () => {} }) {
     const clicked = await evaluate(`(() => {
       const items = [...document.querySelectorAll('[aria-label="Pinned Bots"] button[aria-label], [aria-label="Bot list"] button[aria-label]')]
       const want = ${JSON.stringify(hit)}
-      const el = items.find((e) => (e.getAttribute('aria-label') || '').replace(/,\\s*(?:Unread activity|Working|Replied|Typing)$/i, '').trim() === want)
+      const el = items.find((e) => (e.getAttribute('aria-label') || '').replace(/(?:,\\s*(?:Unread activity|Working|Replied|Typing))+$/i, '').trim() === want)
       if (!el) return false
       el.click()
       return true
@@ -352,7 +376,7 @@ export function createGrokBot({ port, log = () => {} }) {
     send,
     close,
     /** Last known state, without a round trip. */
-    state: () => ({ bot, working, connected: Boolean(ws && ws.readyState === ws.OPEN) }),
+    state: () => ({ bot, working, bots: sidebar, connected: Boolean(ws && ws.readyState === ws.OPEN) }),
     on: (name, fn) => {
       events.on(name, fn)
       return () => events.off(name, fn)

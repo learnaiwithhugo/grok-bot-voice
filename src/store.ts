@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { BotRow } from './lib/bridge'
 
 export type Phase =
   | 'offline'   // waiting for the click that unlocks audio
@@ -220,6 +221,9 @@ type State = {
   activeTool: string | null
   error: string | null
   connected: string[]
+  /** The Grok Bot sidebar, when that is the brain: shown in place of the
+   *  SYSTEMS rail, with the active bot marked and a light on any bot working. */
+  bots: BotRow[]
   /** Name of the speech-synthesis voice in use, shown in the HUD. */
   voice: string
   /** Whether the camera is on and hands are being tracked. Store-backed rather
@@ -258,6 +262,7 @@ type State = {
   setActiveTool: (t: string | null) => void
   setError: (e: string | null) => void
   setConnected: (c: string[]) => void
+  setBots: (b: BotRow[]) => void
   pushTurn: (t: Turn) => void
   appendToLastTurn: (text: string) => void
 
@@ -278,6 +283,7 @@ export const useStore = create<State>((set) => ({
   activeTool: null,
   error: null,
   connected: [],
+  bots: [],
   voice: '',
   gestures: false,
   looking: null,
@@ -352,6 +358,7 @@ export const useStore = create<State>((set) => ({
   setActiveTool: (activeTool) => set({ activeTool }),
   setError: (error) => set({ error }),
   setConnected: (connected) => set({ connected }),
+  setBots: (bots) => set({ bots }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
   appendToLastTurn: (text) =>
     set((s) => {

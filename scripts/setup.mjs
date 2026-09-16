@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // Grok Bot Voice preflight — a friendly, advisory check you run with `npm run setup`.
 //
-// It changes nothing and installs nothing. It looks at your machine, tells you
-// what is ready and what is missing, and prints the command that starts
-// everything. Every check degrades to a single friendly line if something is
-// not there, and the script always exits 0 — it is advice, not a gate.
-import { existsSync, readFileSync } from 'node:fs'
+// It installs nothing. It looks at your machine, tells you what is ready and
+// what is missing, and prints the command that starts everything. Every check
+// degrades to a single friendly line if something is not there, and the script
+// always exits 0 — it is advice, not a gate. The one thing it can write is
+// GROKBOT_BOT in .env.local, and only after asking you which bot to pin.
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createInterface } from 'node:readline/promises'
+import { createGrokBot } from '../bridge/grokbot.mjs'
 
 const tick = '  ok  '
 const warn = ' note '
@@ -61,14 +64,59 @@ if (brain === 'claude') {
     line(info, `Not macOS: open Grok Bot yourself with --remote-debugging-port=${process.env.GROKBOT_PORT ?? env.GROKBOT_PORT ?? 9333} before npm start.`)
   }
   const port = Number(process.env.GROKBOT_PORT ?? env.GROKBOT_PORT ?? 9333)
+  let portOpen = false
   try {
     const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(800) })
+    portOpen = res.ok
     if (res.ok) line(tick, `Grok Bot is open with its control port (127.0.0.1:${port}).`)
   } catch {
     line(info, `Grok Bot's control port (${port}) is not answering yet. npm start opens Grok Bot the right way for you.`)
   }
-  const bot = (process.env.GROKBOT_BOT ?? env.GROKBOT_BOT ?? '').trim()
+  let bot = (process.env.GROKBOT_BOT ?? env.GROKBOT_BOT ?? '').trim()
+  if (!bot && portOpen && process.stdin.isTTY && existsSync(envPath)) bot = await pickBot(port)
   line(info, bot ? `JARVIS will talk to "${bot}".` : 'JARVIS will talk to whichever chat is open in Grok Bot (set GROKBOT_BOT to pin one).')
+}
+
+/**
+ * Which bot is the main one? JARVIS only needs that one name. When Grok Bot
+ * is open, list its sidebar and ask once; Enter keeps the default (whichever
+ * chat is open). The answer is written to .env.local as GROKBOT_BOT.
+ */
+async function pickBot(port) {
+  const grok = createGrokBot({ port })
+  let names = []
+  try {
+    names = await grok.bots()
+  } catch {
+    return ''
+  } finally {
+    grok.close()
+  }
+  if (names.length === 0) return ''
+  console.log('')
+  console.log('Which bot should JARVIS talk to? (Chief of Staff, or whichever bot delegates to the others)')
+  names.forEach((n, i) => console.log(`  ${String(i + 1).padStart(2)}. ${n}`))
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  let answer = ''
+  try {
+    answer = (await rl.question('Number, or Enter to talk to whichever chat is open: ')).trim()
+  } catch {
+    // Ctrl-C or Ctrl-D at the prompt: keep the default, no fuss.
+    console.log('')
+  } finally {
+    rl.close()
+  }
+  const idx = Number(answer)
+  const chosen = Number.isInteger(idx) && idx >= 1 && idx <= names.length ? names[idx - 1] : ''
+  if (!chosen) return ''
+  const text = readFileSync(envPath, 'utf8')
+  const lineFor = `GROKBOT_BOT=${chosen}`
+  const next = /^\s*(?:export\s+)?GROKBOT_BOT\s*=/m.test(text)
+    ? text.replace(/^(\s*(?:export\s+)?)GROKBOT_BOT\s*=.*$/m, `$1${lineFor}`)
+    : `${text.replace(/\n*$/, '\n')}${lineFor}\n`
+  writeFileSync(envPath, next)
+  line(tick, `Saved ${lineFor} to .env.local.`)
+  return chosen
 }
 
 // --- Claude Code config, only relevant to Claude mode -----------------------

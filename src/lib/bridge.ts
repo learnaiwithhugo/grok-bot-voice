@@ -36,6 +36,16 @@ type Frame = {
   seconds?: number
   when?: string
   servers?: Array<string | { name?: string }>
+  bots?: BotRow[]
+}
+
+/** One bot in the Grok Bot sidebar, as the bridge reports it. */
+export type BotRow = {
+  name: string
+  /** '' | 'working' | 'unread' | 'replied' | 'typing' — Grok Bot's own label. */
+  status: string
+  /** The bot JARVIS is talking to. */
+  active: boolean
 }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
@@ -53,6 +63,13 @@ export const bridgeServers = () => servers
 let onServers: ((s: string[]) => void) | null = null
 export function watchServers(fn: (s: string[]) => void) {
   onServers = fn
+}
+
+/** The Grok Bot sidebar, pushed whenever a bot starts or stops working or the
+ *  active chat changes — that is how a delegation shows on the rail. */
+let onBots: ((bots: BotRow[]) => void) | null = null
+export function watchBots(fn: (bots: BotRow[]) => void) {
+  onBots = fn
 }
 
 /** Panels arrive out of band — they're pushed while a turn is in flight,
@@ -223,6 +240,8 @@ function dispatch(ws: WebSocket) {
       onUi?.(msg.op, (msg.args ?? {}) as Record<string, unknown>)
     } else if (msg.type === 'announce' && msg.text) {
       onAnnounce?.(msg.text, msg.raw ?? msg.text)
+    } else if (msg.type === 'bots' && Array.isArray(msg.bots)) {
+      onBots?.(msg.bots.filter((b) => typeof b?.name === 'string' && b.name))
     }
   })
 }
