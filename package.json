@@ -1,5 +1,7 @@
 {
-  "name": "jarvis",
+  "name": "grok-bot-voice",
+  "description": "Talk to your Grok Bot out loud: the JARVIS voice interface wired to the Grok Bot desktop app.",
+  "repository": "github:learnaiwithhugo/grok-bot-voice",
   "private": true,
   "version": "0.0.0",
   "description": "A browser voice assistant with an Iron Man holographic interface, driven by Claude Code through a small Node bridge.",
@@ -16,7 +18,8 @@
     "preview": "vite preview",
     "bridge": "node bridge/server.mjs",
     "bridge:writes": "JARVIS_ALLOW_WRITES=1 node bridge/server.mjs",
-    "setup": "node scripts/setup.mjs"
+    "setup": "node scripts/setup.mjs",
+    "start:claude": "node scripts/start.mjs --claude"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",

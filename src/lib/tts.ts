@@ -244,7 +244,12 @@ function pickVoice(): SpeechSynthesisVoice | null {
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
 export function currentVoiceName(): string {
-  if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'
+  // In Grok Bot mode the voice is JARVIS's but the words are the bot's; the
+  // HUD line says both so nobody wonders who is talking.
+  const brain = caps().brain === 'grokbot' && caps().bot ? ` · ${caps().bot}` : ''
+  if (USE_ELEVENLABS || caps().tts) {
+    return (caps().voice === 'fish' ? 'Fish Audio' : 'ElevenLabs') + brain
+  }
   if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
     return KOKORO_VOICE.replace(/^bm_/, '')
   }

@@ -8,11 +8,102 @@
  *
  * Pass --writes to allow JARVIS to take real actions (drive the phone, the
  * browser, send things): `npm start -- --writes`.
+ *
+ * This fork talks to Grok Bot by default: it also opens Grok Bot with its
+ * control port so the bridge can type into the chat. Pass --claude to run the
+ * original Claude brain instead: `npm start -- --claude`.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 import process from 'node:process'
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { promisify } from 'node:util'
+
+const exec = promisify(execFile)
+
+/**
+ * Open Grok Bot with its control port, so the bridge can type into it.
+ *
+ * Grok Bot has no API. The bridge drives its window over Chrome's DevTools
+ * protocol, which only exists when the app is launched with
+ * `--remote-debugging-port`. So: if the port already answers, Grok Bot is
+ * already open the right way and nothing happens. If Grok Bot is open the
+ * ordinary way (from the Dock), it is asked to quit politely and reopened with
+ * the flag. If it is closed, it is opened. It is launched through `open`, not
+ * as a child of this script, so quitting it does not take JARVIS down and
+ * Ctrl-C here does not close it.
+ *
+ * The port binds to 127.0.0.1 only. While it is open, any program on this Mac
+ * could drive Grok Bot; reopening the app from the Dock closes it again.
+ */
+async function portAnswers(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: AbortSignal.timeout(800),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+async function grokBotRunning() {
+  try {
+    const { stdout } = await exec('pgrep', ['-x', 'Grok Bot'])
+    return stdout.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function openGrokBot(port) {
+  const tag = '\x1b[33mgrok\x1b[0m'
+  if (await portAnswers(port)) {
+    console.log(`${tag} Grok Bot already open with its control port (127.0.0.1:${port}).`)
+    return true
+  }
+  if (process.platform !== 'darwin') {
+    // The quit-and-reopen dance below uses macOS tools. Elsewhere, say what to
+    // do by hand: the flag is the same, only the launcher differs.
+    console.log(`${tag} open Grok Bot yourself with the control port, then this will connect:`)
+    console.log(`${tag}   Windows:  start "" "Grok Bot.exe" --remote-debugging-port=${port}`)
+    console.log(`${tag}   Linux:    grok-bot --remote-debugging-port=${port}`)
+    return false
+  }
+  if (await grokBotRunning()) {
+    console.log(`${tag} Grok Bot is open without the control port; asking it to quit and reopening…`)
+    try {
+      await exec('osascript', ['-e', 'tell application "Grok Bot" to quit'])
+    } catch {
+      /* it may already be on its way out */
+    }
+    const until = Date.now() + 10_000
+    while (Date.now() < until && (await grokBotRunning())) await sleep(250)
+    if (await grokBotRunning()) {
+      console.log(`${tag} Grok Bot did not quit. Quit it yourself and run npm start again.`)
+      return false
+    }
+    await sleep(500)
+  }
+  try {
+    await exec('open', ['-a', 'Grok Bot', '--args', `--remote-debugging-port=${port}`])
+  } catch (err) {
+    console.log(`${tag} could not open Grok Bot: ${err.message}`)
+    return false
+  }
+  const until = Date.now() + 20_000
+  while (Date.now() < until) {
+    if (await portAnswers(port)) {
+      console.log(`${tag} Grok Bot open on 127.0.0.1:${port}.`)
+      return true
+    }
+    await sleep(300)
+  }
+  console.log(`${tag} Grok Bot opened but its control port never answered. Is it signed in?`)
+  return false
+}
 
 /**
  * Put MediaPipe's WebAssembly where the page can actually load it.
@@ -45,6 +136,9 @@ function vendorWasm() {
 }
 
 const writes = process.argv.includes('--writes')
+// --claude: the original brain (Claude Agent SDK) instead of Grok Bot.
+const claude = process.argv.includes('--claude')
+const GROKBOT_PORT = Number(process.env.GROKBOT_PORT ?? 9333)
 
 // A dim label per process, so the interleaved logs stay readable.
 const paint = (tag, colour) => (line) =>
@@ -113,7 +207,16 @@ if (port) {
 
 vendorWasm()
 
-console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
+if (claude) {
+  bridgeEnv.JARVIS_BRAIN = 'claude'
+  console.log('\nJ.A.R.V.I.S. starting — Claude brain, the face.\n')
+} else {
+  bridgeEnv.JARVIS_BRAIN = 'grokbot'
+  bridgeEnv.GROKBOT_PORT = String(GROKBOT_PORT)
+  console.log('\nJ.A.R.V.I.S. starting — Grok Bot as the brain, JARVIS as the voice.\n')
+  await openGrokBot(GROKBOT_PORT)
+}
+
 run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).

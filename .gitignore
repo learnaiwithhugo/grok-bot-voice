@@ -25,3 +25,9 @@ dist-ssr
 
 # Copied out of node_modules by scripts/start.mjs — 34MB of build output.
 public/mediapipe/
+
+# Local working notes, test screenshots and downloaded voice samples — not part
+# of the project anyone else needs.
+tasks/
+voices/
+scripts/grokbot-proof.png

@@ -21,14 +21,90 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { createGrokBot, matchBot, normaliseName } from './grokbot.mjs'
+import { speakable } from './speakable.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 
+/**
+ * Bridge settings from the project's .env.local, when one exists.
+ *
+ * The README has bridge settings living in the shell environment, which is
+ * right for a one-off run and wrong for a machine that starts JARVIS every
+ * day: the key ends up in whichever terminal remembered it. So the bridge also
+ * reads the same .env.local the frontend uses. Only bridge keys are taken
+ * (JARVIS_*, ELEVENLABS_*, FISH_*); VITE_* stay Vite's. The shell still wins —
+ * a variable already set is never overwritten — so `JARVIS_ALLOW_WRITES=1 node
+ * bridge/server.mjs` keeps meaning what it says.
+ */
+function loadDotEnvLocal() {
+  const file = join(dirname(fileURLToPath(import.meta.url)), '..', '.env.local')
+  let raw
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch {
+    return
+  }
+  for (const line of raw.split('\n')) {
+    const m = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line)
+    if (!m) continue
+    const [, key, value] = m
+    if (!/^(JARVIS_|ELEVENLABS_|FISH_|GROKBOT_|GROQ_)/.test(key)) continue
+    if (process.env[key] !== undefined) continue
+    process.env[key] = value.replace(/^(['"])(.*)\1$/, '$2')
+  }
+}
+loadDotEnvLocal()
+
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+
+/**
+ * Which brain answers.
+ *
+ * This fork exists so Hugo can talk to his Grok Bot chief of staff by voice,
+ * so Grok Bot is the default: everything said after the wake word is typed
+ * into the open Grok Bot chat and the bot's reply is read back. There is no
+ * Claude turn in between — JARVIS is the mouth and ears, the bot is the brain.
+ * `JARVIS_BRAIN=claude` (or `npm start -- --claude`) restores the original
+ * Claude Agent SDK behaviour, untouched below.
+ */
+const BRAIN = process.env.JARVIS_BRAIN === 'claude' ? 'claude' : 'grokbot'
+const GROKBOT_PORT = Number(process.env.GROKBOT_PORT ?? 9333)
+/** Which bot answers. Empty means whichever chat is open in the Grok Bot
+ *  window when the first question arrives — so a newcomer's setup is "open
+ *  the bot you want, say Jarvis" with nothing to configure. */
+const GROKBOT_BOT = (process.env.GROKBOT_BOT ?? '').trim()
+
+/** One driver for the one Grok Bot window, shared by every connection. */
+const grok =
+  BRAIN === 'grokbot'
+    ? createGrokBot({ port: GROKBOT_PORT, log: (line) => console.log(`[grok] ${line}`) })
+    : null
+
+/**
+ * Timings of a Grok Bot turn, in milliseconds.
+ *
+ *   QUIET      once something has been read out and no bubble has appeared or
+ *              changed for this long, the turn is closed and the microphone
+ *              is free again. The bot's "is working" light is deliberately
+ *              not consulted: measured, it stays on for ~30 s after a one-word
+ *              answer, and a listener who has heard the answer should not be
+ *              held for that. Anything the bot adds later is announced.
+ *   STILL_ON   say "still on it" once, if nothing has come back by then
+ *   HAND_OFF   stop holding the turn open even with nothing to read; later
+ *              bubbles are announced when they land
+ *   SETTLE     a bubble is read once its text has stopped changing for this long
+ */
+const ms = (name, fallback) => Number(process.env[name] ?? fallback)
+const GROK_QUIET_MS = ms('GROKBOT_QUIET_MS', 2000)
+const GROK_STILL_ON_MS = ms('GROKBOT_STILL_ON_MS', 15_000)
+const GROK_HAND_OFF_MS = ms('GROKBOT_HAND_OFF_MS', 60_000)
+const GROK_SETTLE_MS = ms('GROKBOT_SETTLE_MS', 400)
 
 /**
  * A crash here takes the whole assistant down mid-sentence, and most of what
@@ -457,7 +533,172 @@ function elevenKey() {
   }
 }
 
+/**
+ * Ears.
+ *
+ * Hearing goes to Groq's hosted Whisper when a Groq key exists (free, about a
+ * quarter of a second, 8 hours of audio a day), ElevenLabs Scribe when only
+ * that key exists, and the browser's own recogniser when neither does. With
+ * both keys Groq is first and Scribe is the fallback for any segment Groq
+ * refuses, so a Groq outage costs latency, not hearing.
+ */
+function groqKey() {
+  return process.env.GROQ_API_KEY || null
+}
+const GROQ_STT_MODEL = process.env.GROQ_STT_MODEL ?? 'whisper-large-v3-turbo'
+const GROQ_STT_LANGUAGE = process.env.GROQ_STT_LANGUAGE ?? 'en'
+/**
+ * Whisper's own confidence, per segment. Measured through Groq: a clear
+ * sentence scores about -0.15; a bang, a notification ding and a mouse click
+ * came back as "Bye.", "." and "you" at -0.78, -1.25 and -1.0. Anything below
+ * this is treated as noise and dropped rather than sent on as words.
+ */
+const GROQ_MIN_LOGPROB = Number(process.env.GROQ_MIN_LOGPROB ?? -0.7)
+const earsEngine = () => (groqKey() ? 'groq' : elevenKey() ? 'elevenlabs' : null)
+
+/**
+ * What Whisper says when it hears nothing. These are the well-known fillers it
+ * produces for silence and noise, learned from subtitles; a transcript that is
+ * nothing but one of them is not something anyone said.
+ */
+const NOISE_WORDS = new Set([
+  'you', 'bye', 'thank you', 'thanks', 'thank you for watching', 'thanks for watching',
+  'subscribe', 'hmm', 'mm', 'uh', 'um', 'oh', 'ah', 'the', 'so', 'okay', 'yeah',
+])
+
+/** Strip what no engine should ever hand on as words: audio-event labels
+ *  like "[click]" or "(door slams)", and the filler Whisper invents for noise. */
+function cleanTranscript(text) {
+  let t = String(text ?? '')
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!/[a-z0-9]/i.test(t)) return ''
+  const bare = t.toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (NOISE_WORDS.has(bare)) return ''
+  return t
+}
+
+const audioExt = (type) =>
+  type.includes('ogg') ? 'ogg'
+    : type.includes('mp4') || type.includes('mpeg') ? 'mp4'
+      : type.includes('wav') ? 'wav'
+        : 'webm'
+
+/** Groq: OpenAI-shaped transcription. Returns '' for segments Whisper is not
+ *  confident about. No vocabulary prompt — measured, a "Jarvis." hint made
+ *  Whisper answer "Jarvis." to every click, which would wake him constantly. */
+async function hearGroq(bytes, type) {
+  const form = new FormData()
+  form.append('model', GROQ_STT_MODEL)
+  form.append('language', GROQ_STT_LANGUAGE)
+  form.append('response_format', 'verbose_json')
+  form.append('temperature', '0')
+  form.append('file', new Blob([bytes], { type }), `speech.${audioExt(type)}`)
+  const upstream = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${groqKey()}` },
+    body: form,
+  })
+  if (!upstream.ok) throw new Error(`groq ${upstream.status}: ${(await upstream.text()).slice(0, 200)}`)
+  const data = await upstream.json()
+  const segments = Array.isArray(data.segments) ? data.segments : null
+  if (!segments) return (data.text ?? '').trim()
+  return segments
+    .filter((seg) => typeof seg.avg_logprob !== 'number' || seg.avg_logprob >= GROQ_MIN_LOGPROB)
+    .map((seg) => String(seg.text ?? '').trim())
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** ElevenLabs Scribe. Audio-event tagging off, so a click is silence rather
+ *  than the word "[click]". */
+async function hearEleven(bytes, type) {
+  const form = new FormData()
+  form.append('model_id', 'scribe_v1')
+  form.append('tag_audio_events', 'false')
+  form.append('file', new Blob([bytes], { type }), `speech.${audioExt(type)}`)
+  const upstream = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+    method: 'POST',
+    headers: { 'xi-api-key': elevenKey() },
+    body: form,
+  })
+  if (!upstream.ok) throw new Error(`elevenlabs ${upstream.status}: ${(await upstream.text()).slice(0, 200)}`)
+  const data = await upstream.json()
+  return (data.text ?? '').trim()
+}
+
 const VOICE_ID = process.env.JARVIS_VOICE_ID ?? 'JBFqnCBsd6RMkjVDRZzb'
+
+/**
+ * Fish Audio, the preferred voice whenever its key is present.
+ *
+ * Same shape as ElevenLabs from the browser's point of view: text goes to
+ * /tts, mp3 comes back, and the key never leaves this process. FISH_VOICE_ID
+ * is a Fish "reference" id (the voice picked on fish.audio); blank means
+ * Fish's default voice. FISH_MODEL is sent as a header, the way Fish wants it.
+ *
+ * Hearing is untouched — Fish only speaks. Transcription still rides the
+ * ElevenLabs key when there is one, and the browser recogniser otherwise.
+ */
+function fishKey() {
+  return process.env.FISH_API_KEY || null
+}
+/** Fish Audio's public "Jarvis (MCU) J.A.R.V.I.S" library voice, so a Fish key
+ *  alone gets the voice this project is about. Any voice id from fish.audio's
+ *  library can replace it. */
+const FISH_VOICE_ID = process.env.FISH_VOICE_ID ?? '612b878b113047d9a770c069c8b4fdfe'
+const FISH_MODEL = process.env.FISH_MODEL ?? 's2.1-pro-free'
+
+/** Which cloud voice /tts will speak with: Fish first, then ElevenLabs. */
+const voiceEngine = () => (fishKey() ? 'fish' : elevenKey() ? 'elevenlabs' : null)
+
+function speakFish(text) {
+  const body = {
+    text,
+    format: 'mp3',
+    mp3_bitrate: 64,
+    // 'balanced' answers sooner than 'normal'; for a spoken sentence the
+    // first byte matters more than the last percent of prosody.
+    latency: 'balanced',
+    normalize: true,
+  }
+  if (FISH_VOICE_ID) body.reference_id = FISH_VOICE_ID
+  return fetch('https://api.fish.audio/v1/tts', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${fishKey()}`,
+      'content-type': 'application/json',
+      model: FISH_MODEL,
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+function speakEleven(text) {
+  return fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream` +
+      // 22kHz mono is half the bytes of 44kHz and indistinguishable through
+      // a laptop speaker; optimize_streaming_latency=3 trades a little
+      // prosody for a much earlier first byte.
+      `?output_format=mp3_22050_32&optimize_streaming_latency=3`,
+    {
+      method: 'POST',
+      headers: { 'xi-api-key': elevenKey(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        // Flash is the low-latency model — a conversation needs speed more
+        // than it needs the last few percent of quality.
+        model_id: 'eleven_flash_v2_5',
+        voice_settings: {
+          stability: 0.4,
+          similarity_boost: 0.75,
+          speed: 1.05,
+        },
+      }),
+    },
+  )
+}
 
 /**
  * Where /file is permitted to read from, and how big a read may get.
@@ -682,9 +923,22 @@ const handleRequest = async (req, res) => {
     // with a key the app transcribes with Scribe and speaks with ElevenLabs;
     // without one it falls back to the browser's own recogniser and voice, so a
     // student with nothing configured still has a working assistant.
-    const eleven = Boolean(elevenKey())
+    // Speaking may also come from Fish Audio, which takes priority when its
+    // key is set; `voice` names the engine so the HUD can say which.
+    const voice = voiceEngine()
+    const ears = earsEngine()
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven }))
+    return res.end(
+      JSON.stringify({
+        ok: true,
+        tts: Boolean(voice),
+        stt: Boolean(ears),
+        voice,
+        ears,
+        brain: BRAIN,
+        bot: BRAIN === 'grokbot' ? GROKBOT_BOT || null : null,
+      }),
+    )
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -807,10 +1061,9 @@ const handleRequest = async (req, res) => {
   }
 
   if (req.method === 'POST' && req.url === '/tts') {
-    const key = elevenKey()
-    if (!key) {
+    if (!voiceEngine()) {
       res.writeHead(503, cors)
-      return res.end('no elevenlabs key')
+      return res.end('no speech key')
     }
     // A spoken line is a few hundred bytes. Anything approaching this is not a
     // sentence, and buffering it unbounded would let one request eat the heap.
@@ -842,28 +1095,21 @@ const handleRequest = async (req, res) => {
       return res.end('no text')
     }
     try {
-      const upstream = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream` +
-          // 22kHz mono is half the bytes of 44kHz and indistinguishable through
-          // a laptop speaker; optimize_streaming_latency=3 trades a little
-          // prosody for a much earlier first byte.
-          `?output_format=mp3_22050_32&optimize_streaming_latency=3`,
-        {
-          method: 'POST',
-          headers: { 'xi-api-key': key, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            text,
-            // Flash is the low-latency model — a conversation needs speed more
-            // than it needs the last few percent of quality.
-            model_id: 'eleven_flash_v2_5',
-            voice_settings: {
-              stability: 0.4,
-              similarity_boost: 0.75,
-              speed: 1.05,
-            },
-          }),
-        },
-      )
+      // Fish first. If Fish refuses a sentence (out of credit, a bad voice id)
+      // and an ElevenLabs key exists, that sentence goes to ElevenLabs instead
+      // of falling all the way to the browser voice mid-conversation.
+      let upstream
+      if (fishKey()) {
+        upstream = await speakFish(text)
+        if (!upstream.ok && elevenKey()) {
+          console.warn(
+            `[jarvis] fish tts ${upstream.status} — this sentence goes via ElevenLabs`,
+          )
+          upstream = await speakEleven(text)
+        }
+      } else {
+        upstream = await speakEleven(text)
+      }
       if (!upstream.ok) {
         res.writeHead(upstream.status, cors)
         return res.end(await upstream.text())
@@ -885,17 +1131,16 @@ const handleRequest = async (req, res) => {
   }
 
   // Speech to text. The browser captures one spoken segment as a compressed
-  // audio blob and posts the raw bytes here; the bridge hands them to
-  // ElevenLabs Scribe and returns the transcript. This is what replaced the
-  // browser's own SpeechRecognition — that API dies silently under always-on
-  // use, and a server-side transcriber cannot. Detecting that the user is
-  // speaking at all is done locally with voice-activity detection, which never
-  // touches this endpoint; this is only for the words.
+  // audio blob and posts the raw bytes here; the bridge hands them to Groq
+  // (or ElevenLabs Scribe) and returns the transcript. This is what replaced
+  // the browser's own SpeechRecognition — that API dies silently under
+  // always-on use, and a server-side transcriber cannot. Detecting that the
+  // user is speaking at all is done locally with voice-activity detection,
+  // which never touches this endpoint; this is only for the words.
   if (req.method === 'POST' && req.url === '/stt') {
-    const key = elevenKey()
-    if (!key) {
+    if (!earsEngine()) {
       res.writeHead(503, cors)
-      return res.end('no elevenlabs key')
+      return res.end('no speech-to-text key')
     }
 
     const type = req.headers['content-type'] || 'audio/webm'
@@ -924,37 +1169,22 @@ const handleRequest = async (req, res) => {
       return res.end(JSON.stringify({ text: '' }))
     }
 
+    const bytes = Buffer.concat(chunks)
     try {
-      // The filename extension is the only hint Scribe gets about the codec, so
-      // derive it from the content-type the MediaRecorder reported rather than
-      // hard-coding one.
-      const ext = type.includes('ogg')
-        ? 'ogg'
-        : type.includes('mp4') || type.includes('mpeg')
-          ? 'mp4'
-          : type.includes('wav')
-            ? 'wav'
-            : 'webm'
-      const form = new FormData()
-      form.append('model_id', 'scribe_v1')
-      form.append(
-        'file',
-        new Blob([Buffer.concat(chunks)], { type }),
-        `speech.${ext}`,
-      )
-
-      const upstream = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
-        method: 'POST',
-        headers: { 'xi-api-key': key },
-        body: form,
-      })
-      if (!upstream.ok) {
-        res.writeHead(upstream.status, cors)
-        return res.end(await upstream.text())
+      let text
+      if (groqKey()) {
+        try {
+          text = await hearGroq(bytes, type)
+        } catch (err) {
+          if (!elevenKey()) throw err
+          console.warn(`[jarvis] groq stt failed (${err.message}) — this segment goes via ElevenLabs`)
+          text = await hearEleven(bytes, type)
+        }
+      } else {
+        text = await hearEleven(bytes, type)
       }
-      const data = await upstream.json()
       res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-      return res.end(JSON.stringify({ text: (data.text ?? '').trim() }))
+      return res.end(JSON.stringify({ text: cleanTranscript(text) }))
     } catch (err) {
       res.writeHead(502, cors)
       return res.end(String(err?.message ?? err))
@@ -1002,9 +1232,35 @@ server.listen(PORT)
 
 console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
 console.log(
-  `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
+  `[jarvis] speech ${
+    voiceEngine() === 'fish'
+      ? `via Fish Audio (${FISH_MODEL}, voice ${FISH_VOICE_ID || 'default'})`
+      : voiceEngine() === 'elevenlabs'
+        ? 'via ElevenLabs'
+        : 'using browser fallback voice'
+  }`,
 )
-console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
+console.log(
+  `[jarvis] hearing ${
+    earsEngine() === 'groq'
+      ? `via Groq (${GROQ_STT_MODEL})${elevenKey() ? ', ElevenLabs Scribe as fallback' : ''}`
+      : earsEngine() === 'elevenlabs'
+        ? 'via ElevenLabs Scribe'
+        : 'using browser recogniser'
+  }`,
+)
+if (BRAIN === 'grokbot') {
+  console.log(`[jarvis] brain via Grok Bot (${GROKBOT_BOT || 'whichever chat is open'}, port ${GROKBOT_PORT})`)
+  void grok.available().then((ok) => {
+    console.log(
+      ok
+        ? '[jarvis] grok bot window reachable'
+        : `[jarvis] grok bot window NOT reachable — start Grok Bot with --remote-debugging-port=${GROKBOT_PORT} (npm start does this)`,
+    )
+  })
+} else {
+  console.log(`[jarvis] brain via Claude · model ${MODEL} · effort ${EFFORT}`)
+}
 console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
     (ALLOW_WRITES ? '' : ' — set JARVIS_ALLOW_WRITES=1 to permit shell/file/device actions'),
@@ -1045,7 +1301,10 @@ wss.on('connection', (socket) => {
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
   socket.send(
-    JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
+    JSON.stringify({
+      type: 'ready',
+      servers: BRAIN === 'grokbot' ? [`grok bot · ${GROKBOT_BOT || 'open chat'}`] : Object.keys(MCP_SERVERS),
+    }),
   )
 
   /** Resolves the pending user message into the SDK's input generator. */
@@ -1190,7 +1449,10 @@ wss.on('connection', (socket) => {
     if (!failed) sendTurn({ type: 'tool', name })
   }
 
-  const session = query({
+  // In Grok Bot mode no agent session is started at all: there is nothing for
+  // Claude to do, and starting one would spin up a Claude Code process per
+  // connection for no reason. `session` stays null and every use below guards.
+  const session = BRAIN === 'claude' ? query({
     prompt: userMessages(),
     options: {
       // Everything Claude Code has configured, plus the HUD as an in-process
@@ -1277,10 +1539,10 @@ wss.on('connection', (socket) => {
             }
       },
     },
-  })
+  }) : null
 
   // Pump the session's output stream to the browser for as long as it lives.
-  ;(async () => {
+  if (session) (async () => {
     try {
       for await (const msg of session) {
         if (process.env.JARVIS_DEBUG === '1') {
@@ -1395,11 +1657,213 @@ wss.on('connection', (socket) => {
     }
   })()
 
+  /**
+   * Turns answered by Grok Bot instead of Claude.
+   *
+   * What was said is typed into the open chat. Every bubble a bot then posts
+   * in that chat is read back through the same `text` / `done` frames a Claude
+   * turn produces — so the face speaks it, shows it on the HUD and can barge in
+   * on it without knowing the difference.
+   *
+   * One reader per connection, alive for as long as the socket is, rather than
+   * one per turn. Measured why: "check my latest email" gets "Inbox is on it"
+   * from Chief of Staff in 3 s, then the bot goes idle while Inbox works, and
+   * the real answer lands 20 s later. A watcher that stopped when the bot went
+   * quiet missed it. So bubbles are claimed by whichever turn is open when they
+   * land; anything that lands with no turn open is announced, however late,
+   * and the face reads it out unprompted.
+   *
+   * A bot can take minutes. Holding the microphone hostage that long is worse
+   * than admitting it, so the turn closes QUIET after the last thing it read,
+   * or at HAND_OFF with a promise if nothing has come back at all.
+   */
+  const grokBotName = { current: GROKBOT_BOT }
+
+  /** The turn currently open, or null. */
+  let grokTurn = null
+  /** When the last message was sent; nothing older than this is ever read. */
+  let grokSentAt = 0
+  /** key -> { text, spokenUpTo, timer } for bubbles this connection has read. */
+  const grokBubbles = new Map()
+
+  const grokSay = (spoken) => sendTurn({ type: 'text', delta: `${spoken} ` })
+
+  /** Read out what a bubble says, once its text has stopped changing. */
+  const grokSettle = (key) => {
+    const b = grokBubbles.get(key)
+    if (!b) return
+    const fresh = b.text.slice(b.spokenUpTo)
+    if (!fresh.trim()) return
+    b.spokenUpTo = b.text.length
+    // Another bot's words relayed into this chat are said with its name on.
+    const who = b.label.replace(/ message$/, '')
+    const foreign = normaliseName(who) !== normaliseName(grokBotName.current)
+    const spoken = (foreign && b.raw === undefined ? `From ${who}: ` : '') + speakable(fresh)
+    b.raw = b.text
+    console.log(`[grok] ${who}: ${JSON.stringify(b.text.slice(0, 120))}`)
+    const turn = grokTurn
+    if (turn && !turn.closed) {
+      turn.full.push(b.text)
+      turn.spokenAny = true
+      turn.lastRead = Date.now()
+      grokSay(spoken)
+    } else {
+      send({ type: 'announce', text: spoken, raw: b.text })
+    }
+  }
+
+  const grokOffs = grok
+    ? [
+        grok.on('message', (m) => {
+          if (!/ message$/.test(m.label) || m.label === 'Your message') return
+          // Only the chat of the bot being spoken to. If the window is showing
+          // another bot's chat — Hugo clicked into the Inbox exchange to look —
+          // its bubbles are not read; Chief of Staff relays what matters.
+          if (normaliseName(grok.state().bot) !== normaliseName(grokBotName.current)) return
+          if (!grokBubbles.has(m.key)) {
+            // History and other chats have old stamps; ten seconds of slack for
+            // clocks that disagree. `isNew` keeps a re-rendered old row out.
+            if (!m.isNew || !grokSentAt || m.at < grokSentAt - 10_000) return
+            grokBubbles.set(m.key, { text: '', spokenUpTo: 0, raw: undefined, timer: null, label: m.label })
+          }
+          const b = grokBubbles.get(m.key)
+          b.text = m.text
+          clearTimeout(b.timer)
+          b.timer = setTimeout(() => grokSettle(m.key), GROK_SETTLE_MS)
+        }),
+        grok.on('working', (on, status) => {
+          console.log(`[grok] ${on ? 'working' : 'idle'}${status?.length ? ` (${status.join(' / ')})` : ''}`)
+        }),
+        grok.on('disconnected', () => {
+          const turn = grokTurn
+          if (turn && !turn.closed) {
+            turn.close()
+            sendTurn({ type: 'error', message: 'The Grok Bot window went away mid-answer.' })
+          }
+        }),
+      ]
+    : []
+
+  async function runGrokTurn(text, id) {
+    grokTurn?.close()
+    answering = id
+    const finishWith = (spoken, full = spoken) => {
+      grokSay(spoken)
+      sendTurn({ type: 'done', text: full })
+    }
+
+    if (!(await grok.available())) {
+      return finishWith(
+        "Grok Bot isn't open with its control port, sir. Start it with npm start and try again.",
+      )
+    }
+
+    try {
+      // Spoken commands that stay local. Only ever intercepted when the name
+      // actually matches a bot, so "open the website" reaches the bot as-is.
+      const switching =
+        /^(?:(?:please\s+)?(?:switch|change|go)\s+(?:over\s+)?to|talk\s+to|open|put\s+me\s+through\s+to)\s+(?:the\s+)?(.+?)(?:\s+bot)?[.!?]*$/i.exec(
+          text.trim(),
+        )
+      if (switching) {
+        const hit = matchBot(switching[1], await grok.bots())
+        if (hit) {
+          await grok.openBot(hit)
+          grokBotName.current = hit
+          console.log(`[grok] switched to ${hit}`)
+          return finishWith(`Switched to ${hit}, sir.`)
+        }
+      }
+      if (/^(?:which|what)\s+bot\b/i.test(text.trim())) {
+        return finishWith(`You're talking to ${await grok.currentBot()}, sir.`)
+      }
+
+      if (!grokBotName.current) {
+        // No bot configured: adopt whichever chat is open, and stay on it.
+        grokBotName.current = await grok.currentBot()
+        if (!grokBotName.current) {
+          return finishWith('Open a bot in Grok Bot first, sir, so I know who to talk to.')
+        }
+        console.log(`[grok] talking to the open chat: ${grokBotName.current}`)
+      }
+      const bot = grokBotName.current
+      if (normaliseName(await grok.currentBot()) !== normaliseName(bot)) {
+        await grok.openBot(bot)
+      }
+
+      grokSentAt = await grok.send(text)
+      console.log(`[grok] sent to ${bot}: ${JSON.stringify(text)}`)
+
+      const turn = {
+        full: [],
+        spokenAny: false,
+        lastRead: 0,
+        closed: false,
+        timers: [],
+        close() {
+          if (this.closed) return
+          this.closed = true
+          for (const t of this.timers) clearTimeout(t)
+          if (grokTurn === this) grokTurn = null
+        },
+      }
+      const after = (ms, fn) => turn.timers.push(setTimeout(fn, ms))
+
+      // Closes the turn QUIET after the last bubble it read. The bot's own
+      // "is working" light is deliberately not consulted: it stays on ~30 s
+      // after a one-word answer, and a listener who has heard the answer
+      // should not be held for that. Whatever lands later is announced.
+      const tick = setInterval(() => {
+        if (turn.closed) return clearInterval(tick)
+        if (turn.spokenAny && Date.now() - turn.lastRead >= GROK_QUIET_MS) {
+          clearInterval(tick)
+          turn.close()
+          sendTurn({ type: 'done', text: turn.full.join('\n\n') })
+          console.log(`[grok] turn complete (${turn.full.length} bubble${turn.full.length === 1 ? '' : 's'})`)
+        }
+      }, 250)
+      turn.timers.push(tick)
+
+      let stillOn = false
+      after(GROK_STILL_ON_MS, () => {
+        if (!turn.closed && !turn.spokenAny) {
+          stillOn = true
+          grokSay('Still on it, sir.')
+        }
+      })
+      after(GROK_HAND_OFF_MS, () => {
+        // Nothing to promise if the answer is already being read out; the
+        // quiet rule closes the turn in a moment.
+        if (turn.closed || turn.spokenAny) return
+        const line = stillOn
+          ? "I'll tell you when it lands, sir."
+          : "Still working, sir. I'll tell you when it lands."
+        turn.close()
+        grokSay(line)
+        sendTurn({ type: 'done', text: line })
+        console.log('[grok] turn handed off; later bubbles will be announced')
+      })
+
+      grokTurn = turn
+    } catch (err) {
+      console.error('[grok] turn failed:', err)
+      sendTurn({
+        type: 'error',
+        message: `Grok Bot could not take that, sir: ${err?.message ?? err}`,
+      })
+    }
+  }
+
   socket.on('message', (raw) => {
     let msg
     try {
       msg = JSON.parse(raw.toString())
     } catch {
+      return
+    }
+
+    if (msg.type === 'ask' && typeof msg.text === 'string' && BRAIN === 'grokbot') {
+      void runGrokTurn(msg.text, typeof msg.id === 'string' ? msg.id : null)
       return
     }
 
@@ -1440,10 +1904,18 @@ wss.on('connection', (socket) => {
       }
     }
 
+    if (msg.type === 'interrupt' && BRAIN === 'grokbot') {
+      // Stop reading; the bot carries on in its own window regardless, and
+      // whatever it posts after this is announced rather than lost.
+      if (grokTurn) console.log('[grok] turn cancelled')
+      grokTurn?.close()
+      return
+    }
+
     if (msg.type === 'interrupt') {
       // Held so the next question can wait for it rather than racing it.
       const stopped = turnFinished()
-      settling = Promise.resolve(session.interrupt?.())
+      settling = Promise.resolve(session?.interrupt?.())
         .catch(() => {})
         .then(() =>
           Promise.race([
@@ -1458,6 +1930,9 @@ wss.on('connection', (socket) => {
     console.log('[jarvis] client disconnected')
     closed = true
     deliver?.(null)
-    session.close?.()
+    grokTurn?.close()
+    for (const off of grokOffs) off()
+    for (const b of grokBubbles.values()) clearTimeout(b.timer)
+    session?.close?.()
   })
 })

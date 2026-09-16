@@ -1,315 +1,166 @@
-# J.A.R.V.I.S.
+# Grok Bot Voice
 
-A browser voice assistant with an Iron Man holographic interface. Say
-**"Hey Jarvis"**, he wakes, listens, and does real things through your tools —
-searches the web, generates images, drives your phone, reads your mail. The face
-is a web page (React + Vite + Three.js + custom GLSL). The brain is Claude Code,
-run headless as a library.
+Talk to your Grok Bot out loud.
 
-**The only subscription you need is Claude Code.** No API keys, no OpenAI
-account, no cloud bill — the brain runs on your existing Claude Code login, and
-the heavy work (the model itself) runs on Anthropic's servers, so even a low-end
-laptop only has to draw the interface. **ElevenLabs is an optional add-on** that
-gives JARVIS a much better voice and sharper hearing; without it he speaks and
-listens through the browser's own speech, and everything still works.
+Say **"Jarvis, what's on today"** and the words are typed into the open chat in
+the Grok Bot desktop app. When your bot answers, JARVIS reads the reply back in
+his own voice and shows it on a holographic heads-up display. No Claude in the
+middle: JARVIS is the mouth and ears, your Grok Bot is the brain, so everything
+your bot can do (its memory, its skills, the bots it delegates to) works exactly
+as it does when you type.
 
----
+Built on [J.A.R.V.I.S. by Aditya Dewaskar](https://github.com/adewaskar/jarvis)
+(the face, the wake word, the interface), rewired to drive Grok Bot instead of
+Claude. The original Claude brain is still there behind a flag.
 
-## Requirements
-
-**In one line:** a Claude Code subscription, plus two free things every computer
-can have — Node.js and Chrome. That's the whole list.
-
-- **Claude Code, installed and logged in** — this is the only account you need.
-  Install it with the official method — `npm install -g @anthropic-ai/claude-code`,
-  or the platform installer at <https://docs.claude.com/en/docs/claude-code> —
-  then run `claude` once and complete login. The bridge reuses that login. **No
-  API key**, and usage is billed to your existing Claude account.
-- **Node.js 20 or newer** — free, one installer from <https://nodejs.org>. This
-  is a Node web app, so it is the one unavoidable tool.
-- **Google Chrome or Microsoft Edge**, in a **real browser window** — not an
-  embedded preview pane. Preview panes (including the one inside editors and
-  Claude Code) block microphone access, so the page loads and looks right but
-  never hears you. JARVIS also needs WebGL, which these browsers provide.
-- **Optional: an ElevenLabs API key** — a good add-on, not a requirement. It
-  gives a better voice and sharper transcription; the free tier is plenty for a
-  demo. Without it, everything runs on the browser's own speech.
-
-Run `npm run setup` after cloning and it checks all of this for you, in plain
-language.
+> Grok Bot has no API and no voice mode. This works by launching Grok Bot with a
+> local control port and driving its window the way a browser extension drives a
+> tab. The port only listens on your own machine.
 
 ---
 
-## Quick start
+## What you need
 
-First, install, then start it:
+- **macOS** (the launcher opens Grok Bot for you; Windows and Linux work if you
+  open Grok Bot with the control port yourself, see below).
+- **Grok Bot** installed and signed in, on a plan that includes it.
+- **Node.js 20 or newer** from <https://nodejs.org>.
+- **Google Chrome** (or Edge), in a real window, for the microphone.
+- **Two free keys**, both optional but strongly recommended:
+  - **Fish Audio** for the voice: <https://fish.audio> → Developers → API keys.
+    The default voice is Fish's public "Jarvis (MCU)" library voice, and the
+    `s2.1-pro-free` model costs nothing.
+  - **Groq** for the ears: <https://console.groq.com> → API keys. Free, about a
+    quarter of a second per sentence, 8 hours of audio a day.
+
+Without keys JARVIS still runs on the browser's own voice and hearing. An
+ElevenLabs key also works for either job and is used as the fallback.
+
+## Install
 
 ```bash
+git clone https://github.com/learnaiwithhugo/grok-bot-voice.git
+cd grok-bot-voice
 npm install
-npm start          # runs the brain and the face together
+cp .env.example .env.local
 ```
 
-Then open the URL it prints (http://localhost:5173) in **Chrome**, click **INITIALISE**, and say **“Hey Jarvis”**.
+Open `.env.local` and paste your keys:
 
-Prefer two terminals? Run them separately instead:
+```
+FISH_API_KEY=...
+GROQ_API_KEY=...
+```
+
+Then check the machine:
 
 ```bash
-npm install
+npm run setup
 ```
 
-Terminal 1 — the brain:
+## Run
 
 ```bash
-npm run bridge
+npm start
 ```
 
-Terminal 2 — the face:
+That opens Grok Bot with its control port (quitting and reopening it if it was
+already open the normal way), then starts the bridge and the interface. Open
+<http://localhost:5173> in Chrome, click **INITIALISE**, and say **"Jarvis,
+…"**. Ctrl-C stops everything except Grok Bot.
 
-```bash
-npm run dev
+Open the bot you want to talk to in Grok Bot first. JARVIS talks to whichever
+chat is open, or set `GROKBOT_BOT=Chief of Staff` in `.env.local` to pin one.
+
+## Using it
+
+- **Talk normally.** Everything after "Jarvis" goes to the bot as typed text.
+  The reply is read out word for word, with markdown, links and code stripped
+  for speech, and shown in full on the display.
+- **Interrupt him** by talking over him.
+- **"Jarvis, switch to Researcher"** / "talk to Delivery" / "open Scout" changes
+  bot (any name in your sidebar). **"Jarvis, which bot"** tells you who you're
+  talking to.
+- **Long jobs and delegation.** The turn closes two seconds after the last
+  thing the bot said ("Inbox is on it"), and anything the bot posts later,
+  including answers relayed from other bots, is read out on its own when it
+  lands. If nothing has come back after 15 s JARVIS says "still on it"; at 60 s
+  he says he'll tell you when it lands.
+- **Clap** to wake him instead of clicking, if the tab is open.
+
+## Settings
+
+All in `.env.local`. Only the keys are normally needed.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `FISH_API_KEY` | | Voice. Free `s2.1-pro-free` model. |
+| `FISH_VOICE_ID` | Jarvis (MCU) | Any voice id from fish.audio's library. |
+| `FISH_MODEL` | `s2.1-pro-free` | Fish model; paid models need API credit. |
+| `GROQ_API_KEY` | | Ears. Free Whisper transcription. |
+| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | |
+| `GROQ_STT_LANGUAGE` | `en` | |
+| `GROQ_MIN_LOGPROB` | `-0.7` | Transcripts less confident than this are treated as noise. |
+| `ELEVENLABS_API_KEY` | | Optional fallback for both voice and ears. |
+| `GROKBOT_BOT` | open chat | Pin a bot by name. |
+| `GROKBOT_PORT` | `9333` | Grok Bot's control port (localhost only). |
+| `JARVIS_BRAIN` | `grokbot` | `claude` runs the original Claude brain. |
+| `GROKBOT_QUIET_MS` | `2000` | Close the turn this long after the last bubble. |
+| `GROKBOT_STILL_ON_MS` | `15000` | When to say "still on it". |
+| `GROKBOT_HAND_OFF_MS` | `60000` | When to stop holding the turn open. |
+
+## Windows and Linux
+
+The launcher's "open Grok Bot with the port" step is macOS-only. Open Grok Bot
+yourself with the flag, then run `npm start` as normal:
+
 ```
-
-Then open the app in a **real Chrome or Edge window**:
-
-```bash
-open http://localhost:5173
+Windows:  start "" "Grok Bot.exe" --remote-debugging-port=9333
+Linux:    grok-bot --remote-debugging-port=9333
 ```
-
-Click **INITIALISE**, allow the microphone when asked, and say **"Hey Jarvis"**.
-
-> It has to be a real browser window. Embedded preview panes block the
-> microphone, so JARVIS will look perfectly alive and simply never respond.
-
----
 
 ## How it works
 
-JARVIS is two processes. The browser is the face and the voice; the bridge is
-the brain and the hands.
-
-```
-  ┌─ browser (the face) ───────────────┐        ┌─ bridge (the brain) ─────────────┐
-  │  "Hey Jarvis" wake word            │        │  Node · bridge/server.mjs        │
-  │  local VAD  →  speech to text      │   ws   │  Claude Agent SDK                │
-  │  reactor UI (Three.js + GLSL)      │◄─────► │   = Claude Code, headless        │
-  │  text to speech                    │  8787  │  spawns your MCP servers         │
-  │  heads-up display                  │        │  permission gate (decideTool)    │
-  └────────────────────────────────────┘        └──────────────────────────────────┘
-```
-
-Everything you see and hear happens in the browser. The bridge is a single Node
-process (`bridge/server.mjs`) that runs the **Claude Agent SDK**
-(`@anthropic-ai/claude-agent-sdk`) — this spawns the real `claude` CLI as a child
-process, so **the brain literally is Claude Code, headless.** They talk over a
-WebSocket (plus a few HTTP endpoints) on `ws://localhost:8787`.
-
-**Why a bridge at all?** A browser tab cannot spawn the local stdio MCP servers —
-`higgsfield`, `elevenlabs`, `android`, `playwright`, `exa`, `serper`, and the
-rest. The bridge can. And because it is the Agent SDK, it authenticates off your
-existing Claude Code login: no API key, billed to that same Claude account.
-
-**The model.** `claude-opus-5` at effort `medium` by default. Override with the
-`JARVIS_MODEL` and `JARVIS_EFFORT` environment variables. On startup the bridge
-prints its choice, e.g. `[jarvis] model claude-opus-5 · effort medium`.
-
-### The voice pipeline
-
-The loop is designed so that nothing silently dies and barge-in feels natural.
-
-- **Detection is local.** An energy-based voice-activity detector
-  (`src/lib/vad.ts`) decides when you are speaking. It is instant, cannot quietly
-  fail, and is what makes **barge-in** work — speak while JARVIS is talking and he
-  stops.
-- **Transcription has two tiers, chosen automatically at boot.** The browser asks
-  the bridge `/health` and picks the best available:
-  - **ElevenLabs key present** → ElevenLabs Scribe, via the bridge `/stt` endpoint.
-  - **Nothing configured** → the browser's own `SpeechRecognition` (Chrome/Edge),
-    guarded by a heartbeat so it recovers when Chrome throttles it.
-- **Speaking** uses the **ElevenLabs voice when a key is present**, and the
-  browser's `speechSynthesis` otherwise. If a cloud call fails it falls back to
-  the browser voice, and if the OS voice itself is broken it latches over to the
-  cloud voice.
-
-So it works with no keys and auto-upgrades when a key appears — there is no flag
-to set. Capability detection lives in `src/lib/capabilities.ts`, which probes the
-bridge's `GET /health` (returning `{ ok, tts, stt }`, both tracking the
-ElevenLabs key) once at boot and picks the engines.
-
----
-
-## What JARVIS can do
-
-Beyond answering, JARVIS reaches every MCP server in your Claude Code
-configuration, and can drive his own interface.
-
-### Your tools
-
-Every server in your `~/.claude.json` is handed to the SDK explicitly. Depending
-on what you have installed, that is roughly:
-
-- **Web & search** — `exa`, `serper`, `serpapi`
-- **Images & video** — `higgsfield`, `openrouter-image`, `palmier-pro`
-- **Voice** — `elevenlabs`
-- **Your phone** — `android`
-- **The browser** — `playwright`
-
-A few things you can say:
-
-- *"What's happening in AI this week?"*
-- *"Generate an image of the Mark VII suit."*
-- *"Take a screenshot of my phone."*
-- *"Open my GitHub notifications."*
-
-> **Note on account connectors.** Servers you added through your **claude.ai
-> account** are not stored on disk, so the bridge cannot see them — it works from
-> the servers in `~/.claude.json` (about 14), not the claude.ai ones.
-
-### JARVIS controls the interface
-
-He drives the UI through MCP tools the bridge exposes:
-
-- `ui_theme` — accent, background, per-phase colours
-- `ui_reactor` — colour, scale, intensity, spin, and style (`ring` | `sphere` | `wire`), visibility
-- `ui_orbit` — put images in orbit around the reactor
-- `ui_chrome` — show or hide rails, transcript, badges
-- `ui_effect` — `glitch` | `pulse` | `scan` | `shake` | `flash`
-- `ui_screen` — clear
-- `ui_reset` — back to defaults
-
-So *"make it red, hide the systems list, put that render in orbit"* is a spoken
-command.
-
-### The heads-up display
-
-JARVIS authors panels with a `display` tool against a fixed `.hud-*` design
-system. The browser sanitises the markup (DOMPurify, a class allowlist and a
-strict CSP) before rendering. Rich media works — images, `<video>`, and
-YouTube/Vimeo embeds. Remote images and video are fetched **server-side** through
-the bridge (`/img` and `/media`, both SSRF-guarded), so hotlink-blocked news
-thumbnails still appear and the page never beacons your IP to a host the model
-chose.
-
----
-
-## Controls
-
-| Key / phrase | Does |
-|---|---|
-| **"Hey Jarvis"** | Wake him |
-| **Space** | Talk without the wake word |
-| Just speak | Interrupt him mid-sentence (barge-in) |
-| **V** | Cycle the browser voice |
-| **Escape** | Stand down |
-| **D** | Live diagnostics panel |
-| **T** | One-line audio self-test |
-
----
-
-## The boot sequence
-
-Power-up plays a four-beat Iron Man start-up (`src/ui/Boot.tsx`): an
-"INITIATING SYSTEM" status bar with a segmented progress bar and boot log; then
-concentric reticle rings resolving into "J.A.R.V.I.S"; then a suit schematic;
-then the triangular arc reactor lighting up — with a start-up sound under it
-(`public/audio/boot-music.mp3`).
-
----
-
-## Configuration
-
-Everything is optional in bridge mode. Frontend settings live in `.env.local`
-(copy `.env.example`); bridge settings are environment variables.
-
-### Bridge
-
-| Variable | Default | Effect |
-|---|---|---|
-| `JARVIS_BRIDGE_PORT` | `8787` | Port for the WebSocket + HTTP endpoints |
-| `JARVIS_MODEL` | `claude-opus-5` | Model to run |
-| `JARVIS_EFFORT` | `medium` | Reasoning effort |
-| `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
-| `JARVIS_ALLOWED_ORIGINS` | local dev | Extra WebSocket origins to accept |
-| `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
-| `JARVIS_FILE_ROOTS` | — | Roots the `/file` endpoint may serve from |
-| `JARVIS_VOICE_ID` | — | ElevenLabs voice id |
-| `ELEVENLABS_API_KEY` | — | Optional; enables the ElevenLabs voice + Scribe |
-
-### Frontend (`.env.local`)
-
-| Variable | Effect |
-|---|---|
-| `VITE_BACKEND` | `bridge` (default) or `direct` |
-| `VITE_BRIDGE_URL` | Where to reach the bridge |
-| `VITE_TTS_ENGINE` | `system` or `kokoro` |
-| `VITE_KOKORO_VOICE` | Voice for the Kokoro engine |
-| `VITE_USE_ELEVENLABS` | Force the ElevenLabs voice on |
-| `VITE_ANTHROPIC_API_KEY` | Direct mode only |
-
-### Adding an ElevenLabs key
-
-You do not have to touch a flag. Either:
-
-- Set `ELEVENLABS_API_KEY` on the bridge before starting it, **or**
-- Add the key to your `elevenlabs` MCP server's env in `~/.claude.json` — the
-  bridge reads it from there too.
-
-Either way, `/health` starts reporting the capability, the browser picks it up on
-the next boot, and both the voice and transcription upgrade automatically.
-
----
-
-## Enabling actions
-
-The tool gate starts **read-only**. Search, generation and lookups run freely;
-anything effectful — send, tap, delete, install, pay — is denied. Voice is a poor
-interface for a confirmation dialog, so the decision is made ahead of time in
-`decideTool()` in `bridge/server.mjs`, not at the moment of use. The bridge sets
-`settingSources: []`, which makes its own gate the only authority — filesystem
-settings and any global `bypassPermissions` cannot override it.
-
-To allow effectful tools (phone, browser driving, sending), run the bridge this
-way instead:
-
-```bash
-npm run bridge:writes
-```
-
-> Read `decideTool()` before you do. *"Hey Jarvis, clean up my downloads folder"*
-> means something rather different with writes enabled.
-
----
+- `scripts/start.mjs` opens Grok Bot as `open -a "Grok Bot" --args --remote-debugging-port=9333`.
+- `bridge/grokbot.mjs` connects to that port over Chrome's DevTools protocol,
+  reads the bot list from the sidebar, types into the chat box, presses Enter,
+  and polls the transcript every 300 ms for new bubbles and the "is working"
+  status. It reads the app's accessibility labels, not its styling, so it
+  survives Grok Bot's frequent redesigns better than it otherwise would.
+- `bridge/server.mjs` turns each spoken sentence into a Grok Bot turn and
+  streams the reply back to the interface as the same frames a Claude answer
+  would use, so the face, the voice and interruption all work unchanged.
+- Hearing: the browser detects that you're speaking and posts the audio to the
+  bridge, which sends it to Groq (then ElevenLabs, then nothing). Noise is
+  filtered on the bridge: audio-event labels are stripped, low-confidence
+  output and Whisper's known noise-words ("you", "Bye.") are dropped.
+- Speaking: the interface asks the bridge for audio a sentence at a time; the
+  bridge generates it with Fish Audio (then ElevenLabs, then the browser).
 
 ## Troubleshooting
 
-**I can't hear him, or he can't hear me.** Press **D** for the diagnostics panel
-— it states plainly whether he is hearing you and whether he is producing sound.
-Press **T** for a one-line audio self-test.
+- **"Grok Bot isn't open with its control port, sir."** Grok Bot was opened
+  from the Dock. Quit it and run `npm start` again, or open it with the flag.
+- **The interface hears nothing.** Chrome must be a real window, not a preview
+  pane, and the microphone must be allowed. `npm run setup` reports the keys.
+- **Replies are read but the turn feels slow to close.** Lower
+  `GROKBOT_QUIET_MS`.
+- **JARVIS hears "Jarvis" when you click or a notification pings.** Shouldn't
+  happen with Groq or ElevenLabs. If it does, raise `GROQ_MIN_LOGPROB` towards
+  `-0.5`.
+- **Startup banner says "grok bot window NOT reachable".** Grok Bot isn't
+  running with the port, or isn't signed in.
 
-**No voice at all.** You must be in **Chrome or Edge**, in a **real browser
-window** (not an embedded preview), and you must have **allowed the microphone**.
+## Claude mode
 
-**Bridge not reachable.** Check that `npm run bridge` is still running in its
-terminal, and that nothing else is holding port `8787`.
+`npm start -- --claude` (or `npm run start:claude`) runs the original J.A.R.V.I.S.
+with Claude Code as the brain. See `docs/UPSTREAM-README.md` for everything
+that mode can do.
 
----
+## Credits and license
 
-## Security
-
-All of this lives in `bridge/server.mjs`:
-
-- The WebSocket accepts only local dev origins (add more with
-  `JARVIS_ALLOWED_ORIGINS`).
-- `/file`, `/img` and `/media` validate the scheme, confine to allowed roots,
-  resolve the real path, and refuse private and loopback addresses (SSRF guard).
-- The tool gate (`decideTool`) is default-deny for effectful MCP tools.
-- A strict CSP in `index.html`; model-authored panel HTML is sanitised.
-
----
-
-## Credits & licence
-
-MIT.
-
-The boot sound and any tracks in `public/audio/` ship with the project for the
-demo. If you go on to monetise something built on this, clearing the rights to
-that audio is your responsibility.
+The interface, wake word, voice pipeline and Claude bridge are
+[adewaskar/jarvis](https://github.com/adewaskar/jarvis), MIT licensed. The Grok
+Bot driver, the hearing and voice changes and this README are additions by
+[Hugo Manning](https://learnaiwithhugo.com), also MIT. Grok Bot is xAI's product;
+this project isn't affiliated with xAI, Fish Audio, Groq or ElevenLabs.

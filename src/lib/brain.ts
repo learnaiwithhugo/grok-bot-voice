@@ -69,6 +69,11 @@ export function watchUi(fn: (op: string, args: any) => void): void {
   if (usingBridge) bridge.watchUi(fn)
 }
 
+/** A reply that arrives after its turn was closed (Grok Bot mode). Bridge-only. */
+export function watchAnnounce(fn: (text: string, raw: string) => void): void {
+  if (usingBridge) bridge.watchAnnounce(fn)
+}
+
 /**
  * The one thing the bridge asks US for.
  *

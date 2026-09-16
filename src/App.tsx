@@ -24,6 +24,7 @@ import {
   watchBlades,
   watchCapture,
   watchUi,
+  watchAnnounce,
   watchConnection,
   connectedLabels,
   usingBridge,
@@ -214,8 +215,70 @@ export default function App() {
         // Stay open. Having to say his name again to add one more sentence is
         // the difference between a conversation and a vending machine.
         listen(FOLLOW_UP_MS)
+        drainAnnouncements()
       }
     }
+  }
+
+  // -- a reply with no question in front of it --------------------------------
+
+  /**
+   * Grok Bot mode: a bot that took longer than the bridge was willing to hold
+   * the turn open sends its answer here when it lands. Read out in full and put
+   * on the transcript. Not followed by an open microphone — after an announcement JARVIS goes back to waiting for his name,
+   * because an open microphone after every late reply sent room noise to the
+   * bot. Anything that lands while he is mid-answer waits its turn.
+   */
+  const announcements = useRef<Array<{ text: string; raw: string }>>([])
+
+  const drainAnnouncements = () => {
+    const next = announcements.current.shift()
+    if (next) void announce(next.text, next.raw)
+  }
+
+  const announce = async (text: string, raw: string): Promise<void> => {
+    const mine = ++turn.current
+    const stale = () => mine !== turn.current
+
+    clearIdle()
+    const s = store.getState()
+    s.setCaption('')
+    s.pushTurn({ id: newId(), role: 'jarvis', text: raw })
+    s.setPhase('speaking')
+
+    const spk = createSpeaker()
+    speaker.current = spk
+    sfx.duck(true)
+    music.duck(true)
+    spk.say(text)
+
+    try {
+      await spk.end()
+      if (stale()) return
+      sfx.play('done')
+    } finally {
+      if (!stale()) {
+        speaker.current = null
+        sfx.duck(false)
+        music.duck(false)
+        // Back to the wake word, not the open follow-up window. Nobody asked a
+        // question here, and an open microphone after every late reply sent
+        // footsteps and room noise to the bot as if they were instructions.
+        goDormant()
+        drainAnnouncements()
+      }
+    }
+  }
+
+  const onAnnounce = (text: string, raw: string) => {
+    const phase = store.getState().phase
+    if (phase === 'offline' || phase === 'boot') return
+    const busy = phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
+    if (busy) {
+      announcements.current.push({ text, raw })
+      return
+    }
+    void announce(text, raw)
   }
 
   // -- voice events ---------------------------------------------------------
@@ -449,6 +512,7 @@ export default function App() {
           console.warn('[jarvis] unknown ui op:', op, args)
       }
     })
+    watchAnnounce(onAnnounce)
     // In bridge mode the conversation lives in the agent session, which is tied
     // to the socket — so a drop silently wipes his memory while the transcript
     // on screen still shows it. Better to say so than to let him quietly forget.

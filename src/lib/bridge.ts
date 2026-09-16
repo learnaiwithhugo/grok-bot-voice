@@ -23,6 +23,7 @@ type Frame = {
   delta?: string
   name?: string
   text?: string
+  raw?: string
   message?: string
   panel?: Panel
   blade?: Blade
@@ -98,6 +99,19 @@ export function watchBlades(fn: (blade: Blade) => void) {
 let onUi: ((op: string, args: any) => void) | null = null
 export function watchUi(fn: (op: string, args: any) => void) {
   onUi = fn
+}
+
+/**
+ * Something said with no question behind it.
+ *
+ * In Grok Bot mode a bot can take minutes, and the bridge stops holding the
+ * turn open after a while so the user can talk again. When the reply finally
+ * lands it arrives here: `text` is what to say, `raw` is the bot's exact words
+ * for the transcript. No `ask` id, because no turn is waiting for it.
+ */
+let onAnnounce: ((text: string, raw: string) => void) | null = null
+export function watchAnnounce(fn: (text: string, raw: string) => void) {
+  onAnnounce = fn
 }
 
 /**
@@ -207,6 +221,8 @@ function dispatch(ws: WebSocket) {
       // A `ui` frame with no args is normal — reset and clear take none — so an
       // absent args object is an empty one, not a reason to drop the command.
       onUi?.(msg.op, (msg.args ?? {}) as Record<string, unknown>)
+    } else if (msg.type === 'announce' && msg.text) {
+      onAnnounce?.(msg.text, msg.raw ?? msg.text)
     }
   })
 }
